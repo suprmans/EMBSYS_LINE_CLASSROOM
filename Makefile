@@ -6,6 +6,7 @@ ENV_FILE ?= .env
 
 help:
 	@echo "Available targets:"
+	@echo "  make setup                 - Install hooks + sync LINE service deps (one-time bootstrap)"
 	@echo "  make check-env             - Validate required LINE env vars from process environment"
 	@echo "  make check-env-file        - Validate required LINE env vars from ENV_FILE (.env by default)"
 	@echo "  make precommit-install     - Install pre-commit + detect-secrets and enable git hook"
@@ -13,7 +14,6 @@ help:
 	@echo "  make precommit-update      - Update pinned hook versions"
 	@echo "  make baseline-generate     - Regenerate .secrets.baseline"
 	@echo "  make baseline-audit        - Audit baseline interactively"
-	@echo "  make setup                 - Run precommit-install + check-env"
 
 check-env:
 	uv run scripts/check_env.py
@@ -38,4 +38,13 @@ baseline-generate:
 baseline-audit:
 	uv tool run detect-secrets audit .secrets.baseline
 
-setup: precommit-install check-env
+setup: precommit-install
+	@echo ""
+	@echo "→ Syncing LINE service dependencies (line/)..."
+	cd line && uv sync
+	@echo ""
+	@echo "Installed packages:"
+	cd line && uv pip list
+	@echo ""
+	@echo "Bootstrap complete."
+	@echo "Next → run 'make check-env' to validate LINE credentials before starting the server."

@@ -1,7 +1,7 @@
 import sqlite3
 import contextlib
 
-DB_PATH = "attendance.db"
+DB_PATH = "classroom.db"
 
 
 def init_db():
