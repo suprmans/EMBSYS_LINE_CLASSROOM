@@ -1,0 +1,20 @@
+repos:
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        name: detect-secrets (baseline)
+        args:
+          - --baseline
+          - .secrets.baseline
+          - --exclude-files
+          - \.secrets\.baseline|.*\.lock$|uv\.lock$|package-lock\.json$
+
+  - repo: local
+    hooks:
+      - id: line-env-check
+        name: LINE env check script (manual)
+        entry: uv run scripts/check_env.py
+        language: system
+        pass_filenames: false
+        stages: [ manual ]

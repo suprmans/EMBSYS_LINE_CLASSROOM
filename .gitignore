@@ -1,0 +1,109 @@
+# -- OS / editor ---------------------------------------------------------------
+.DS_Store
+**.DS_Store
+Thumbs.db
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+
+# -- Python --------------------------------------------------------------------
+*.pyc
+**.pyc
+__pycache__/
+**/__pycache__/
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# -- uv / virtual env ----------------------------------------------------------
+uv.lock
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+
+# -- Secrets / credentials (never commit) -------------------------------------
+# Env files
+.env
+.env.local
+.env.*.local
+.env.development
+.env.staging
+.env.production
+.env.test
+**.env
+**.env.local
+
+# Keep safe template files tracked
+!.env.example
+!.env.sample
+!.env.template
+
+# Private keys & certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.pkcs12
+*.jks
+*.keystore
+*.cer
+*.crt
+*.der
+*.csr
+id_rsa
+id_rsa.pub
+id_ecdsa
+id_ecdsa.pub
+id_ed25519
+id_ed25519.pub
+id_dsa
+id_dsa.pub
+
+# Cloud credential artifacts
+service_account*.json
+*-service-account.json
+*_service_account.json
+serviceaccount*.json
+gcp-key*.json
+gcloud-key*.json
+.aws/credentials
+aws-credentials.json
+aws_credentials.json
+
+# Kubernetes / terraform / infra secrets
+*secret*.yaml
+*secret*.yml
+kubeconfig
+.kubeconfig
+*.tfstate
+*.tfstate.backup
+.terraform/
+terraform.tfvars
+*.auto.tfvars
+
+# Misc local secret-like files
+*.token
+*_token.txt
+*_apikey.txt
+api_key.txt
+auth.json
+credentials.json
+secrets.json
+secrets.yaml
+secrets.yml
+secret.json
+secret.yaml
+secret.yml
+config.local.*
+local.settings.json
