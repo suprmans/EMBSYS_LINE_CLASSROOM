@@ -1,10 +1,10 @@
 // BusinessCase01 — Smart Classroom Attendance
 // LINE Simple Beacon  HWID: 018f62bd52
 //
-// Blue   btn GPIO26 → LED GPIO32 : IDLE    → OPEN     (cls:open)
-// Yellow btn GPIO14 → LED GPIO33 : OPEN    → RUNNING  (cls:run)
-//                                  RUNNING → QUIZ     (cls:qz)
-// Red    btn GPIO13 → LED GPIO25 : any     → ENDED    (cls:end)
+// Blue   btn GPIO26 → LED GPIO32 : IDLE         → OPEN          (cls:open)  solid ON
+// Yellow btn GPIO14 → LED GPIO33 : OPEN         → LATE_CHECKIN  (cls:late)  solid ON
+//                                  LATE_CHECKIN → QUIZ          (cls:qz)    fast blink 5 Hz
+// Red    btn GPIO13 → LED GPIO25 : any          → ENDED         (cls:end)   3× flash
 //
 // Session ID is resolved by the backend from a pre-scheduled time window.
 
@@ -21,7 +21,7 @@ const int btnPins[] = { 26, 14, 13 };  // Blue, Yellow, Red
 const int ledPins[] = { 32, 33, 25 };  // Blue, Yellow, Red
 
 // ── Session state ─────────────────────────────────────────────
-enum State { IDLE, OPEN, RUNNING, QUIZ, ENDED };
+enum State { IDLE, OPEN, LATE_CHECKIN, QUIZ, ENDED };
 State sessionState = IDLE;
 
 // ── Debounce ──────────────────────────────────────────────────
@@ -113,17 +113,17 @@ void loop() {
     if ((now - lastChange[i]) >= 25 && raw != lastStable[i]) {
       lastStable[i] = raw;
       if (raw == LOW) {
-        if      (i == 0 && sessionState == IDLE)    transitionTo(OPEN);
-        else if (i == 1 && sessionState == OPEN)    transitionTo(RUNNING);
-        else if (i == 1 && sessionState == RUNNING) transitionTo(QUIZ);
-        else if (i == 2 && sessionState != IDLE)    transitionTo(ENDED);
+        if      (i == 0 && sessionState == IDLE)         transitionTo(OPEN);
+        else if (i == 1 && sessionState == OPEN)         transitionTo(LATE_CHECKIN);
+        else if (i == 1 && sessionState == LATE_CHECKIN) transitionTo(QUIZ);
+        else if (i == 1 && sessionState == QUIZ)         transitionTo(LATE_CHECKIN);
+        else if (i == 2 && sessionState != IDLE)         transitionTo(ENDED);
       }
     }
   }
 
-  // ── Yellow LED blink (RUNNING=1Hz, QUIZ=5Hz) ─────────────
-  unsigned long interval = (sessionState == RUNNING) ? 500 : 100;
-  if ((sessionState == RUNNING || sessionState == QUIZ) && now - lastBlink >= interval) {
+  // ── Yellow LED blink (QUIZ=5Hz only; LATE_CHECKIN is solid) ─
+  if (sessionState == QUIZ && now - lastBlink >= 100) {
     lastBlink  = now;
     blinkState = !blinkState;
     digitalWrite(ledPins[1], blinkState);
@@ -152,15 +152,16 @@ void transitionTo(State next) {
     digitalWrite(ledPins[1], LOW);
     digitalWrite(ledPins[2], LOW);
     advertiseBeacon("cls:open");
-  } else if (next == RUNNING) {
+  } else if (next == LATE_CHECKIN) {
     digitalWrite(ledPins[0], LOW);
-    lastBlink = millis(); blinkState = false;
-    advertiseBeacon("cls:run");
+    digitalWrite(ledPins[1], HIGH);  // solid ON — no blink
+    advertiseBeacon("cls:late");
   } else if (next == QUIZ) {
     lastBlink = millis(); blinkState = false;
     advertiseBeacon("cls:qz");
   }
 
   sessionState = next;
-  Serial.printf("[%s]\n", next == OPEN ? "OPEN" : next == RUNNING ? "RUN" : "QUIZ");
+  const char* label = (next == OPEN) ? "OPEN" : (next == LATE_CHECKIN) ? "LATE_CHECKIN" : "QUIZ";
+  Serial.printf("[%s]\n", label);
 }

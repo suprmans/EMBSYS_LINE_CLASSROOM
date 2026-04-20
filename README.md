@@ -8,6 +8,87 @@ Licensed under Apache License 2.0.
 
 ---
 
+## Architecture Overview
+
+### System Flow
+
+```mermaid
+flowchart LR
+    subgraph HW["Hardware — ESP32"]
+        BTN_B["Blue Button\nGPIO 26"]
+        BTN_Y["Yellow Button\nGPIO 14"]
+        BTN_R["Red Button\nGPIO 13"]
+        LED_B["Blue LED GPIO 32\nsolid — OPEN"]
+        LED_Y["Yellow LED GPIO 33\nsolid — LATE_CHECKIN\nfast blink — QUIZ"]
+        LED_R["Red LED GPIO 25\n3× flash — ENDED"]
+        BLE["BLE Advertiser\ncls:open / cls:late\ncls:qz / cls:end"]
+        BTN_B & BTN_Y & BTN_R --> BLE
+        BLE -.->|drives| LED_B & LED_Y & LED_R
+    end
+
+    subgraph PHONE["Student Phone"]
+        LINE_APP["LINE App\nBluetooth ON"]
+    end
+
+    subgraph BACKEND["Cloud Backend"]
+        WEBHOOK["FastAPI\nPOST /webhook/v1/"]
+        DB[("PostgreSQL\nstudents\nsessions\nbeacon_events")]
+        REPLY_API["LINE Reply API"]
+    end
+
+    BLE -->|"BLE Advertisement\n~10 m range"| LINE_APP
+    LINE_APP -->|"beacon enter event\nHTTPS POST"| WEBHOOK
+    WEBHOOK <-->|"read / write"| DB
+    WEBHOOK -->|"reply_token"| REPLY_API
+    REPLY_API -->|"chat reply"| LINE_APP
+```
+
+### ESP32 Dual-Core Architecture
+
+```mermaid
+graph TB
+    subgraph ESP32["ESP32-WROOM-32 — Xtensa LX6 Dual-Core 240 MHz"]
+        subgraph Core0["Core 0 — Protocol CPU"]
+            BT_CTRL["Bluetooth Controller\nHCI + Link Layer"]
+            BLE_HOST["BLE Host Stack\n(Bluedroid)"]
+            ADV_TASK["Advertising Task\nbluetoothTask"]
+            BT_CTRL --> BLE_HOST --> ADV_TASK
+        end
+        subgraph Core1["Core 1 — Application CPU"]
+            SETUP["setup()\nGPIO init · BLEDevice::init()\nboot flash · advertiseBeacon(cls:idle)"]
+            LOOP["loop()\nButton debounce 25 ms\nYellow LED blink — QUIZ only"]
+            SM["transitionTo(state)\nLED output · advertiseBeacon(dm)"]
+            SETUP --> LOOP --> SM
+        end
+        Core1 -->|"BLEAdvertising API\npAdv->stop() / setAdvertisementData() / start()"| Core0
+    end
+```
+
+### Session State Machine
+
+```mermaid
+flowchart LR
+    IDLE -->|"Blue / cls:open"| OPEN
+    OPEN -->|"Yellow / cls:late"| LATE_CHECKIN
+    LATE_CHECKIN -->|"Yellow / cls:qz"| QUIZ
+    QUIZ -->|"Yellow / cls:late"| LATE_CHECKIN
+    OPEN -->|"Red / cls:end"| ENDED
+    LATE_CHECKIN -->|"Red / cls:end"| ENDED
+    QUIZ -->|"Red / cls:end"| ENDED
+    ENDED -->|"auto 5 s"| IDLE
+```
+
+### Button & LED Reference
+
+| Button | GPIO | State transition | LED (GPIO) | Beacon payload | Student status |
+|---|---|---|---|---|---|
+| Blue | 26 | IDLE → OPEN | Blue 32 solid ON | `cls:open` | PRESENT |
+| Yellow | 14 | OPEN → LATE_CHECKIN | Yellow 33 solid ON | `cls:late` | LATE (if not already checked in) |
+| Yellow | 14 | LATE_CHECKIN → QUIZ | Yellow 33 fast blink 5 Hz | `cls:qz` | QUIZ |
+| Red | 13 | any → ENDED | Red 25 × 3 flash | `cls:end` | ABSENT (unmarked students) |
+
+---
+
 ## How Student Check-In Works
 
 LINE fires a `beacon enter` event the **first time** the phone detects the beacon in a given session. If a student is already in range when the session changes state, they will **not** automatically receive the new message.
@@ -117,23 +198,13 @@ Send **Hello** to your LINE OA — the bot should reply with a greeting.
 | Component | GPIO | Role |
 |---|---|---|
 | Blue button | 26 | Start class (IDLE → OPEN) |
-| Yellow button | 14 | Close window / start quiz |
-| Red button | 13 | End class |
+| Yellow button | 14 | Open late check-in (OPEN → LATE_CHECKIN) / start quiz (LATE_CHECKIN → QUIZ) |
+| Red button | 13 | End class (any → ENDED) |
 | Blue LED | 32 | Solid — session OPEN |
-| Yellow LED | 33 | Slow blink — RUNNING / fast blink — QUIZ |
+| Yellow LED | 33 | Solid — LATE_CHECKIN / fast blink 5 Hz — QUIZ |
 | Red LED | 25 | 3× flash — session ENDED |
 
 ---
-
-## Architecture
-
-```
-ESP32 BLE beacon  →  Student's LINE app  →  LINE platform  →  POST /webhook/v1/
-                                                                      │
-                                                               FastAPI + PostgreSQL
-                                                                      │
-                                                              LINE Reply API  →  Student chat
-```
 
 Sessions are pre-scheduled by the lecturer via `POST /api/v1/sessions/` with a Bangkok-time window.
 The backend resolves the active session at event time — the ESP32 does not carry a session ID.
