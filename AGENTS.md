@@ -9,11 +9,13 @@ Read it fully before touching any code.
 ## What This Project Does
 
 An ESP32 on a classroom desk broadcasts a BLE LINE Beacon. When a student's phone
-enters range, LINE fires a webhook to the backend. The backend logs their attendance
-and replies to their LINE chat — no app install, no QR code, no manual sign-in.
+enters range (~10 m), LINE fires a webhook to the backend. The backend logs their
+attendance and replies to their LINE chat — no app install, no QR code, no manual sign-in.
 
 A lecturer controls the session with 3 physical buttons. Each button changes session
 state and updates the beacon payload, which changes what every student receives.
+
+**Issued HWID:** `018f62bd52` (LINE Manager → scool.BEACON)
 
 ---
 
@@ -22,7 +24,7 @@ state and updates the beacon payload, which changes what every student receives.
 ```
 .
 ├── AGENTS.md               ← you are here
-├── DEVELOPMENT.md          ← setup, DB commands, pre-commit workflow
+├── DEVELOPMENT.md          ← setup, DB commands, beacon setup, pre-commit workflow
 ├── .env                    ← secrets (git-ignored) — never commit
 ├── .env.example            ← template with placeholder values
 ├── Makefile                ← make setup / make check-env / make precommit-run
@@ -38,16 +40,15 @@ state and updates the beacon payload, which changes what every student receives.
 │   └── src/
 │       ├── button_led.ino          ← original hardware prototype (do not modify)
 │       └── case01/
-│           └── case01.ino          ← BusinessCase01 firmware (full state machine)
+│           └── case01.ino          ← BusinessCase01 firmware (BLE beacon + state machine)
 │
 └── line/                   ← Python FastAPI backend
     ├── pyproject.toml
-    ├── classroom.db        ← SQLite (auto-created, git-ignored)
     └── src/
         ├── main.py         ← app entry point, loads .env, wires routers
         ├── core/           ← shared across all API versions
         │   ├── auth.py         Bearer token dependency (require_lecturer)
-        │   ├── database.py     All DB tables + every query function
+        │   ├── database.py     All DB tables + every query function (PostgreSQL)
         │   └── line_client.py  verify_signature(), reply()
         └── v1/             ← BusinessCase01
             ├── webhook.py      POST /webhook/v1/  (LINE calls this)
@@ -61,14 +62,29 @@ state and updates the beacon payload, which changes what every student receives.
 
 | Variable | Used by | Notes |
 |---|---|---|
+| `DATABASE_URL` | `core/database.py` | PostgreSQL DSN — required, no default |
 | `LINE_CHANNEL_SECRET` | `core/line_client.py` | Signature verification |
 | `LINE_CHANNEL_ACCESS_TOKEN` | `core/line_client.py` | Reply API auth |
-| `LINE_CHANNEL_ID` | reference only | Not read in code yet |
+| `LINE_CHANNEL_ID` | reference only | Not read in code |
+| `LINE_BEACON_HWID` | reference / firmware | `018f62bd52` — issued from LINE Manager |
 | `LINE_WEBHOOK_URL` | reference only | Set in LINE Developers Console |
 | `LECTURER_TOKEN` | `core/auth.py` | Bearer token for all `/api/` routes |
 
 `load_dotenv` runs at the top of `main.py` **before** any relative imports — this is
 intentional because `core/line_client.py` reads `os.environ` at module level.
+
+---
+
+## LINE Beacon Setup (one-time)
+
+> Docs: https://developers.line.biz/en/docs/messaging-api/using-beacons/#getting-beacon
+
+1. **LINE Manager → [Beacon](https://manager.line.biz/beacon/register)**
+2. **Link beacons with bot account** → select OA → **Select**
+3. **Issue LINE Simple Beacon hardware IDs** → select OA → **Issue hardware ID**
+4. Copy 10-char hex HWID → add to `.env` as `LINE_BEACON_HWID`
+5. Update `LINE_HWID[5]` bytes in `esp32/src/case01/case01.ino` to match
+6. Flash ESP32 → start backend → set webhook URL in LINE Developers Console → **Verify**
 
 ---
 
@@ -79,7 +95,7 @@ cd line
 uv run uvicorn src.main:app --reload --port 8000
 ```
 
-Swagger UI: `http://localhost:8000/docs`  
+Swagger UI: `http://localhost:8000/docs`
 Click 🔒 **Authorize** → paste `LECTURER_TOKEN` to use lecturer endpoints.
 
 For public webhook (ngrok):
@@ -87,6 +103,9 @@ For public webhook (ngrok):
 ngrok http 8000
 # paste https://<id>.ngrok-free.app/webhook/v1/ into LINE Developers Console
 ```
+
+**Note:** the venv uses Python 3.14. Always use `uv run python` (not `uv run python3.12`)
+when running scripts inside `line/`.
 
 ---
 
@@ -105,21 +124,20 @@ ngrok http 8000
 
 ---
 
-## Database Schema
+## Database Schema (PostgreSQL)
 
 ```sql
 students        user_id (PK), student_id (UNIQUE), name, registered_at
 sessions        session_id (PK), version, opened_at, ended_at
-beacon_events   id, user_id, student_id, session_id, status, dm, ts
+beacon_events   id (SERIAL PK), user_id, student_id, session_id, status, dm, ts
 overrides       student_id + session_id (PK), status, reason, ts
 attendance      VIEW — first beacon hit per (student_id, session_id)
 ```
 
-**Read order for effective status:** overrides → attendance view.
+**Effective status read order:** `overrides` → `attendance` view.
 `get_student_session_status()` in `core/database.py` handles this.
 
-`init_db()` is called on app startup via FastAPI `lifespan`. Safe to call multiple
-times — all statements use `CREATE TABLE IF NOT EXISTS` / `CREATE VIEW IF NOT EXISTS`.
+All queries use `%s` placeholders (psycopg3). Never use `?` (that's sqlite3).
 
 ---
 
@@ -141,8 +159,24 @@ IDLE ──[Blue btn]──► OPEN ──[Yellow btn]──► RUNNING ──[Y
 | OPEN | `cls:open:NNN` | ✅ Present + slides |
 | RUNNING | `cls:run:NNN` | ⏰ Late + slides |
 | QUIZ | `cls:qz:NNN` | 📝 Quiz LIFF link |
-| ENDED | `cls:end:NNN` | Own status only |
+| ENDED | `cls:end:NNN` | Own status only (5 s hold, then `cls:idle`) |
 | IDLE | `cls:idle` | *(ignored)* |
+
+---
+
+## LINE Simple Beacon Packet Format
+
+```
+02 01 06                    AD flags
+03 03 6F FE                 Complete UUID list: 0xFE6F (LINE Corp)
+XX 16 6F FE                 Service data header
+   02                       Sub-type: LINE Simple Beacon
+   01 8F 62 BD 52           HWID bytes (018f62bd52)
+   7F                       TX power
+   [≤13 bytes dm]           Device message — session payload
+```
+
+Advertising interval: 100 ms (160 × 0.625 ms units).
 
 ---
 
@@ -160,7 +194,7 @@ LINE webhook POST /webhook/v1/
 ```
 
 `_handle_beacon` in `v1/handlers.py`:
-1. Ignore if not `beacon_type == "enter"`
+1. Ignore if `beacon_type != "enter"`
 2. Parse `session_id` from `dm` (3rd colon-segment)
 3. Look up student by `user_id` → prompt registration if unknown
 4. Match `dm` prefix → log event + reply to that student only
@@ -183,10 +217,10 @@ LINE webhook POST /webhook/v1/
 1. Create `line/src/v2/` with `__init__.py`, `webhook.py`, `handlers.py`, `api.py`
 2. Import from `..core.*` — do not duplicate core code
 3. Register a new LINE OA channel with its own `LINE_V2_CHANNEL_*` env vars
-4. Add `LINE_V2_CHANNEL_SECRET` / `LINE_V2_CHANNEL_ACCESS_TOKEN` reading to a
-   new `core/line_client_v2.py` (or parameterise `line_client.py`)
+4. Add a `core/line_client_v2.py` (or parameterise `line_client.py`) for the new secrets
 5. Mount the new routers in `main.py`
-6. Document in a new `docs/BusinessCase02.md` + `docs/SystemCase02.md`
+6. Issue a second HWID from LINE Manager for the new beacon device
+7. Document in `docs/BusinessCase02.md` + `docs/SystemCase02.md`
 
 See `docs/SystemCase01.md` for the v2 (lab session) design that is already spec'd.
 
@@ -196,7 +230,8 @@ See `docs/SystemCase01.md` for the v2 (lab session) design that is already spec'
 
 - `esp32/src/button_led.ino` — original prototype, **do not modify**
 - Each business case gets its own subfolder: `esp32/src/caseNN/caseNN.ino`
-- `case01.ino` prints `dm` payloads to Serial at 115200 baud for BLE integration debugging
+- `case01.ino` uses `BLEDevice` / `BLEAdvertising` from the ESP32 Arduino BLE library
+- Prints `dm` payload to Serial at 115200 baud on every state transition
 - Button GPIO: Blue=26, Yellow=14, Red=13 (all `INPUT_PULLUP`, active LOW)
 - LED GPIO: Blue=32, Yellow=33, Red=25
 
@@ -204,10 +239,10 @@ See `docs/SystemCase01.md` for the v2 (lab session) design that is already spec'
 
 ## Python Conventions
 
-- Always use `python3.12` / `uv run python3.12` — never bare `python`
 - Package manager: `uv` — never `pip` directly inside this project
+- The venv (`line/.venv`) uses **Python 3.14** — use `uv run python` not `uv run python3.12`
 - Run server: `uv run uvicorn src.main:app --reload --port 8000`
-- Run a script: `uv run python3.12 scripts/check_env.py`
+- Run a script: `uv run python scripts/check_env.py`
 
 ---
 
