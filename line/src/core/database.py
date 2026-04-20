@@ -4,6 +4,8 @@ import os
 import psycopg
 from psycopg.rows import dict_row
 
+_TZ = "Asia/Bangkok"
+
 
 def _dsn() -> str:
     url = os.environ.get("DATABASE_URL")
@@ -14,7 +16,7 @@ def _dsn() -> str:
 
 @contextlib.contextmanager
 def _conn():
-    with psycopg.connect(_dsn(), row_factory=dict_row) as con:
+    with psycopg.connect(_dsn(), row_factory=dict_row, options=f"-c timezone={_TZ}") as con:
         yield con
 
 
@@ -32,19 +34,30 @@ def init_db():
         """)
         con.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
-                session_id       TEXT PRIMARY KEY,
-                version          TEXT NOT NULL DEFAULT 'v1',
-                opened_at        TIMESTAMPTZ DEFAULT NOW(),
-                ended_at         TIMESTAMPTZ,
-                slides_url       TEXT NOT NULL DEFAULT '',
-                supplementary_url TEXT NOT NULL DEFAULT ''
+                session_id        TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                label             TEXT NOT NULL DEFAULT '',
+                version           TEXT NOT NULL DEFAULT 'v1',
+                start_time        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                end_time          TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '3 hours',
+                status            TEXT NOT NULL DEFAULT 'SCHEDULED',
+                slides_url        TEXT NOT NULL DEFAULT '',
+                supplementary_url TEXT NOT NULL DEFAULT '',
+                auto_created      BOOLEAN NOT NULL DEFAULT FALSE
             )
         """)
-        con.execute("""
-            ALTER TABLE sessions
-                ADD COLUMN IF NOT EXISTS slides_url        TEXT NOT NULL DEFAULT '',
-                ADD COLUMN IF NOT EXISTS supplementary_url TEXT NOT NULL DEFAULT ''
-        """)
+        # ── migrations for existing installs ──────────────────
+        for col, definition in [
+            ("label",             "TEXT NOT NULL DEFAULT ''"),
+            ("start_time",        "TIMESTAMPTZ"),
+            ("end_time",          "TIMESTAMPTZ"),
+            ("status",            "TEXT NOT NULL DEFAULT 'SCHEDULED'"),
+            ("slides_url",        "TEXT NOT NULL DEFAULT ''"),
+            ("supplementary_url", "TEXT NOT NULL DEFAULT ''"),
+            ("auto_created",      "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ]:
+            con.execute(
+                f"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS {col} {definition}"
+            )
         con.execute("""
             CREATE TABLE IF NOT EXISTS beacon_events (
                 id         SERIAL PRIMARY KEY,
@@ -78,6 +91,23 @@ def init_db():
                 ON  be.student_id = first.student_id
                 AND be.session_id = first.session_id
                 AND be.ts         = first.first_ts
+        """)
+        con.execute("""
+            CREATE OR REPLACE VIEW beacon_log AS
+            SELECT
+                be.id,
+                be.student_id,
+                be.session_id,
+                s.label        AS session_label,
+                be.status,
+                be.dm,
+                be.ts,
+                ROW_NUMBER() OVER (
+                    PARTITION BY be.student_id, be.session_id
+                    ORDER BY be.ts
+                ) AS entry_number
+            FROM beacon_events be
+            LEFT JOIN sessions s ON s.session_id = be.session_id
         """)
         con.commit()
 
@@ -122,11 +152,71 @@ def delete_student(student_id: str) -> bool:
 
 # ── Sessions ──────────────────────────────────────────────────
 
-def create_session(session_id: str, version: str = "v1"):
+def schedule_session(
+    start_time: str,
+    end_time: str,
+    label: str = "",
+    slides_url: str = "",
+    supplementary_url: str = "",
+    version: str = "v1",
+) -> dict:
+    """Create a pre-scheduled session. Times are ISO-8601 strings (Bangkok tz assumed if no offset)."""
+    with _conn() as con:
+        row = con.execute(
+            """
+            INSERT INTO sessions
+                (session_id, label, version, start_time, end_time, slides_url, supplementary_url, status, auto_created)
+            VALUES (gen_random_uuid()::text, %s, %s, %s::timestamptz, %s::timestamptz, %s, %s, 'SCHEDULED', FALSE)
+            RETURNING session_id, label, start_time, end_time, status,
+                      slides_url, supplementary_url, auto_created
+            """,
+            (label, version, start_time, end_time, slides_url, supplementary_url),
+        ).fetchone()
+        con.commit()
+        return row
+
+
+def find_active_session() -> dict | None:
+    """Return the session whose time window contains NOW(), preferring the most recently started."""
+    with _conn() as con:
+        return con.execute("""
+            SELECT session_id, label, status, slides_url, supplementary_url, auto_created,
+                   start_time, end_time
+            FROM sessions
+            WHERE start_time <= NOW()
+              AND end_time   >= NOW()
+              AND status     != 'ENDED'
+            ORDER BY start_time DESC
+            LIMIT 1
+        """).fetchone()
+
+
+def create_walkin_session() -> dict:
+    """Auto-create a walk-in session (3-hour window from now) when no scheduled session exists."""
+    with _conn() as con:
+        row = con.execute("""
+            INSERT INTO sessions
+                (session_id, label, start_time, end_time, status, auto_created)
+            VALUES (
+                gen_random_uuid()::text,
+                'Walk-in — ' || TO_CHAR(NOW() AT TIME ZONE 'Asia/Bangkok', 'DD Mon YYYY HH24:MI'),
+                NOW(),
+                NOW() + INTERVAL '3 hours',
+                'OPEN',
+                TRUE
+            )
+            RETURNING session_id, label, status, slides_url, supplementary_url, auto_created,
+                      start_time, end_time
+        """).fetchone()
+        con.commit()
+        return row
+
+
+def transition_session(session_id: str, status: str):
     with _conn() as con:
         con.execute(
-            "INSERT INTO sessions (session_id, version) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-            (session_id, version),
+            "UPDATE sessions SET status = %s WHERE session_id = %s",
+            (status, session_id),
         )
         con.commit()
 
@@ -140,30 +230,23 @@ def update_session_materials(session_id: str, slides_url: str, supplementary_url
         con.commit()
 
 
-def get_session_materials(session_id: str) -> dict:
-    with _conn() as con:
-        row = con.execute(
-            "SELECT slides_url, supplementary_url FROM sessions WHERE session_id = %s",
-            (session_id,),
-        ).fetchone()
-        return row or {"slides_url": "", "supplementary_url": ""}
-
-
 def end_session(session_id: str):
     with _conn() as con:
         con.execute(
-            "UPDATE sessions SET ended_at = NOW() WHERE session_id = %s", (session_id,)
+            "UPDATE sessions SET status = 'ENDED' WHERE session_id = %s", (session_id,)
         )
         con.commit()
 
 
 def list_sessions(date: str | None = None, limit: int = 20, offset: int = 0) -> list[dict]:
-    where  = "WHERE DATE(s.opened_at) = %s" if date else ""
+    where  = "WHERE DATE(s.start_time AT TIME ZONE 'Asia/Bangkok') = %s" if date else ""
     params: list = ([date] if date else []) + [limit, offset]
     with _conn() as con:
         return con.execute(f"""
             SELECT
-                s.session_id, s.version, s.opened_at, s.ended_at,
+                s.session_id, s.label, s.version,
+                s.start_time, s.end_time, s.status,
+                s.slides_url, s.supplementary_url, s.auto_created,
                 COUNT(CASE WHEN a.status = 'PRESENT' THEN 1 END) AS present,
                 COUNT(CASE WHEN a.status = 'LATE'    THEN 1 END) AS late,
                 COUNT(CASE WHEN a.status = 'ABSENT'  THEN 1 END) AS absent,
@@ -171,8 +254,10 @@ def list_sessions(date: str | None = None, limit: int = 20, offset: int = 0) -> 
             FROM sessions s
             LEFT JOIN attendance a ON a.session_id = s.session_id
             {where}
-            GROUP BY s.session_id, s.version, s.opened_at, s.ended_at
-            ORDER BY s.opened_at DESC
+            GROUP BY s.session_id, s.label, s.version,
+                     s.start_time, s.end_time, s.status,
+                     s.slides_url, s.supplementary_url, s.auto_created
+            ORDER BY s.start_time DESC
             LIMIT %s OFFSET %s
         """, params).fetchall()
 
@@ -182,7 +267,9 @@ def get_session(session_id: str) -> dict | None:
         return con.execute(
             """
             SELECT
-                s.session_id, s.version, s.opened_at, s.ended_at,
+                s.session_id, s.label, s.version,
+                s.start_time, s.end_time, s.status,
+                s.slides_url, s.supplementary_url, s.auto_created,
                 COUNT(CASE WHEN a.status = 'PRESENT' THEN 1 END) AS present,
                 COUNT(CASE WHEN a.status = 'LATE'    THEN 1 END) AS late,
                 COUNT(CASE WHEN a.status = 'ABSENT'  THEN 1 END) AS absent,
@@ -190,7 +277,9 @@ def get_session(session_id: str) -> dict | None:
             FROM sessions s
             LEFT JOIN attendance a ON a.session_id = s.session_id
             WHERE s.session_id = %s
-            GROUP BY s.session_id, s.version, s.opened_at, s.ended_at
+            GROUP BY s.session_id, s.label, s.version,
+                     s.start_time, s.end_time, s.status,
+                     s.slides_url, s.supplementary_url, s.auto_created
             """,
             (session_id,),
         ).fetchone()
@@ -276,6 +365,25 @@ def get_student_session_status(student_id: str, session_id: str) -> str | None:
         return row["status"] if row else None
 
 
+def list_beacon_log(
+    session_id: str,
+    student_id: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[dict]:
+    """All beacon hits for a session — multiple rows per student when they re-enter."""
+    where  = "AND bl.student_id = %s" if student_id else ""
+    params: list = [session_id] + ([student_id] if student_id else []) + [limit, offset]
+    with _conn() as con:
+        return con.execute(f"""
+            SELECT student_id, session_label, status, dm, ts, entry_number
+            FROM beacon_log bl
+            WHERE bl.session_id = %s {where}
+            ORDER BY ts ASC
+            LIMIT %s OFFSET %s
+        """, params).fetchall()
+
+
 def mark_absentees(session_id: str) -> list[str]:
     with _conn() as con:
         seen = {
@@ -293,7 +401,7 @@ def mark_absentees(session_id: str) -> list[str]:
                 con.execute(
                     "INSERT INTO beacon_events (user_id, student_id, session_id, status, dm)"
                     " VALUES (%s, %s, %s, 'ABSENT', %s)",
-                    (s["user_id"], s["student_id"], session_id, f"cls:end:{session_id}"),
+                    (s["user_id"], s["student_id"], session_id, "cls:end"),
                 )
                 absent.append(s["student_id"])
         con.commit()

@@ -156,11 +156,39 @@ print('DB initialized.')
 
 ```
 students        user_id (PK), student_id (UNIQUE), name, registered_at
-sessions        session_id (PK), version, opened_at, ended_at
-beacon_events   id (SERIAL), user_id, student_id, session_id, status, dm, ts
+
+sessions        session_id (PK, UUID text), label, version,
+                start_time TIMESTAMPTZ, end_time TIMESTAMPTZ,
+                status (SCHEDULED/OPEN/RUNNING/QUIZ/ENDED),
+                slides_url, supplementary_url,
+                auto_created BOOLEAN
+
+beacon_events   id (SERIAL PK), user_id, student_id, session_id, status, dm, ts
+                -- every beacon enter stored, including re-entries
+
 overrides       student_id + session_id (PK), status, reason, ts
+
 attendance      VIEW — first beacon hit per (student_id, session_id)
+                       this is the official attendance status
+
+beacon_log      VIEW — all beacon hits with entry_number
+                       entry_number=1 is the same row as attendance
+                       entry_number=2,3,… are re-entries (bathroom trip, etc.)
 ```
+
+All timestamps are in **Asia/Bangkok** (UTC+7) — the DB connection sets this automatically.
+
+### BLE Re-Entry Behaviour
+
+LINE fires `beacon enter` once per "session" from the phone's perspective — typically when the phone first detects the beacon. If a student leaves and comes back (bathroom, break, etc.) LINE fires `enter` again on return.
+
+**All events are stored.** The `attendance` view picks the earliest `ts` as the official status. The `beacon_log` view shows everything with an `entry_number` counter.
+
+**Students must re-trigger manually if already in range when the session opens:**
+- Walk out of range (~5–10 m) and back in, **or**
+- Toggle Bluetooth off then on
+
+The student-facing reply includes this tip automatically.
 
 ### Inspect with psql
 
@@ -168,26 +196,77 @@ attendance      VIEW — first beacon hit per (student_id, session_id)
 psql -U scool_beacon -d scool_beacon
 
 -- inside psql:
-\dt                                          -- list tables
-\dv                                          -- list views
+\dt                                                              -- list tables
+\dv                                                              -- list views
 SELECT * FROM students;
-SELECT * FROM attendance WHERE session_id = '001';
+SELECT * FROM sessions ORDER BY start_time DESC;
+SELECT * FROM attendance WHERE session_id = '<uuid>';
+SELECT * FROM beacon_log WHERE session_id = '<uuid>' ORDER BY ts;
 SELECT * FROM beacon_events ORDER BY ts DESC LIMIT 20;
 \q
+```
+
+### Find students who re-entered (audit trail)
+
+```sql
+-- Students with more than one beacon hit in a session
+SELECT student_id, session_id, COUNT(*) AS hit_count
+FROM beacon_events
+WHERE session_id = '<uuid>'
+GROUP BY student_id, session_id
+HAVING COUNT(*) > 1
+ORDER BY hit_count DESC;
+
+-- Full timeline for a specific student
+SELECT entry_number, status, dm, ts
+FROM beacon_log
+WHERE session_id = '<uuid>' AND student_id = '6400000001'
+ORDER BY ts;
+```
+
+Or use the API:
+```bash
+curl -H "Authorization: Bearer <LECTURER_TOKEN>" \
+  "http://localhost:8000/api/v1/sessions/<uuid>/log"
 ```
 
 ### Export attendance as CSV
 
 ```bash
 psql -U scool_beacon -d scool_beacon \
-  -c "\COPY (SELECT student_id, status, ts FROM attendance WHERE session_id = '001') TO 'session_001.csv' CSV HEADER"
+  -c "\COPY (SELECT student_id, status, ts FROM attendance WHERE session_id = '<uuid>') TO 'session.csv' CSV HEADER"
 ```
 
 Or use the API:
 ```bash
 curl -H "Authorization: Bearer <LECTURER_TOKEN>" \
-  "http://localhost:8000/api/v1/sessions/001/export?format=csv" \
-  -o session_001.csv
+  "http://localhost:8000/api/v1/sessions/<uuid>/export?format=csv" \
+  -o session.csv
+```
+
+### Pre-schedule a session
+
+```bash
+curl -X POST -H "Authorization: Bearer <LECTURER_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "label": "Week 12 — Real-Time Systems",
+    "start_time": "2026-04-20T09:00:00+07:00",
+    "end_time":   "2026-04-20T11:00:00+07:00",
+    "slides_url": "bit.ly/emb-w12",
+    "supplementary_url": "bit.ly/emb-w12-ref"
+  }' \
+  http://localhost:8000/api/v1/sessions/
+```
+
+If no session is scheduled when the blue button is pressed, a walk-in session is auto-created
+(`auto_created=true`). Retroactively set materials with:
+
+```bash
+curl -X PATCH -H "Authorization: Bearer <LECTURER_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"slides_url":"bit.ly/emb-w12","supplementary_url":"bit.ly/emb-w12-ref"}' \
+  "http://localhost:8000/api/v1/sessions/<uuid>/"
 ```
 
 ---

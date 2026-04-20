@@ -73,6 +73,9 @@ state and updates the beacon payload, which changes what every student receives.
 `load_dotenv` runs at the top of `main.py` **before** any relative imports — this is
 intentional because `core/line_client.py` reads `os.environ` at module level.
 
+All timestamps are stored as `TIMESTAMPTZ`. The DB connection forces `timezone=Asia/Bangkok`
+so all values display and compare in Bangkok time (UTC+7).
+
 ---
 
 ## LINE Beacon Setup (one-time)
@@ -114,11 +117,14 @@ when running scripts inside `line/`.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `POST` | `/webhook/v1/` | LINE signature | LINE events (beacon + message) |
-| `GET` | `/api/v1/sessions/` | Bearer | List sessions + counts |
+| `POST` | `/api/v1/sessions/` | Bearer | Pre-schedule a session (label + time window + materials) |
+| `GET` | `/api/v1/sessions/` | Bearer | List sessions + attendance counts |
 | `GET` | `/api/v1/sessions/{id}/` | Bearer | Single session detail |
-| `GET` | `/api/v1/sessions/{id}/attendance` | Bearer | Attendance records |
+| `PATCH` | `/api/v1/sessions/{id}/` | Bearer | Update slides_url / supplementary_url |
+| `GET` | `/api/v1/sessions/{id}/attendance` | Bearer | Official attendance (first event per student) |
 | `PATCH` | `/api/v1/sessions/{id}/attendance` | Bearer | Manual status override |
-| `GET` | `/api/v1/sessions/{id}/export` | Bearer | CSV / JSON export |
+| `GET` | `/api/v1/sessions/{id}/log` | Bearer | Full beacon log — all re-entries per student |
+| `GET` | `/api/v1/sessions/{id}/export` | Bearer | CSV / JSON export of attendance |
 | `GET` | `/api/v1/students/` | Bearer | List registered students |
 | `DELETE` | `/api/v1/students/{id}` | Bearer | Unregister a student |
 
@@ -128,16 +134,48 @@ when running scripts inside `line/`.
 
 ```sql
 students        user_id (PK), student_id (UNIQUE), name, registered_at
-sessions        session_id (PK), version, opened_at, ended_at
-beacon_events   id (SERIAL PK), user_id, student_id, session_id, status, dm, ts
+
+sessions        session_id (PK, UUID text), label, version,
+                start_time, end_time,          -- Bangkok-time window
+                status (SCHEDULED/OPEN/RUNNING/QUIZ/ENDED),
+                slides_url, supplementary_url,
+                auto_created BOOLEAN           -- TRUE if walk-in (no pre-schedule)
+
+beacon_events   id (SERIAL PK), user_id, student_id, session_id,
+                status, dm, ts                 -- every beacon hit stored
+
 overrides       student_id + session_id (PK), status, reason, ts
+
 attendance      VIEW — first beacon hit per (student_id, session_id)
+                       this is the official attendance status
+
+beacon_log      VIEW — all beacon hits with entry_number per student per session
+                       use for full audit trail and re-entry reports
 ```
 
 **Effective status read order:** `overrides` → `attendance` view.
 `get_student_session_status()` in `core/database.py` handles this.
 
 All queries use `%s` placeholders (psycopg3). Never use `?` (that's sqlite3).
+
+---
+
+## Session Lifecycle
+
+### Pre-scheduled (normal flow)
+
+1. Lecturer calls `POST /api/v1/sessions/` with `start_time`, `end_time`, `label`, optional URLs
+2. Session is created with `status = SCHEDULED`
+3. Lecturer presses Blue button → `cls:open` beacon fires → handler calls `find_active_session()` → transitions to `OPEN`
+4. Yellow → `RUNNING`, Yellow again → `QUIZ`, Red → `ENDED`
+
+### Walk-in (fallback)
+
+If no session with `start_time <= NOW() <= end_time AND status != ENDED` exists when Blue is pressed:
+- `create_walkin_session()` auto-creates a 3-hour session with `auto_created = TRUE`, label `"Walk-in — DD Mon YYYY HH:MM"`
+- Students see `ℹ️ No session was scheduled — a walk-in session was created automatically.` appended to their reply
+- Lecturer can retroactively set materials via `PATCH /api/v1/sessions/{id}/`
+- `GET /api/v1/sessions/` shows `"auto_created": true` as a clear signal
 
 ---
 
@@ -152,15 +190,39 @@ IDLE ──[Blue btn]──► OPEN ──[Yellow btn]──► RUNNING ──[Y
                                                          ENDED → IDLE
 ```
 
-`dm` payload in BLE beacon:
+`dm` payload in BLE beacon (no session ID — resolved server-side by time window):
 
 | State | `dm` value | Student receives |
 |---|---|---|
-| OPEN | `cls:open:NNN` | ✅ Present + slides |
-| RUNNING | `cls:run:NNN` | ⏰ Late + slides |
-| QUIZ | `cls:qz:NNN` | 📝 Quiz LIFF link |
-| ENDED | `cls:end:NNN` | Own status only (5 s hold, then `cls:idle`) |
+| OPEN | `cls:open` | ✅ Present + materials (if set) |
+| RUNNING | `cls:run` | ⏰ Late + materials (if set) |
+| QUIZ | `cls:qz` | 📝 Quiz link + materials (if set) |
+| ENDED | `cls:end` | Own status only (5 s hold, then `cls:idle`) |
 | IDLE | `cls:idle` | *(ignored)* |
+
+---
+
+## BLE Re-Entry Behaviour — Important
+
+LINE fires `beacon enter` **once per session** — when the phone first detects the beacon.
+
+**Student implications:**
+- If already in range when lecturer presses Blue → won't auto-receive ✅ Present
+- Must walk out (~5–10 m) and back, **or** toggle Bluetooth off then on
+- The reply message includes this tip automatically
+
+**Re-entry is stored, not silently dropped:**
+- Every `enter` event (including bathroom trip → return) is inserted into `beacon_events`
+- The `attendance` VIEW takes the **first** event timestamp → official status
+- The `beacon_log` VIEW shows **all** events with `entry_number` (1 = first, 2 = return, …)
+- Use `GET /api/v1/sessions/{id}/log` to inspect re-entries for any student
+
+**Example — student leaves and returns:**
+```
+entry_number=1  ts=09:05  status=PRESENT  dm=cls:open   ← official
+entry_number=2  ts=09:47  status=LATE     dm=cls:run    ← re-entry during RUNNING state
+```
+The official status stays PRESENT; the second row is in the audit log only.
 
 ---
 
@@ -177,6 +239,9 @@ XX 16 6F FE                 Service data header
 ```
 
 Advertising interval: 100 ms (160 × 0.625 ms units).
+
+LINE sends the `dm` field **hex-encoded** in webhook events.
+`handlers.py` decodes it: `binascii.unhexlify(dm_hex).decode("utf-8")`.
 
 ---
 
@@ -195,9 +260,12 @@ LINE webhook POST /webhook/v1/
 
 `_handle_beacon` in `v1/handlers.py`:
 1. Ignore if `beacon_type != "enter"`
-2. Parse `session_id` from `dm` (3rd colon-segment)
-3. Look up student by `user_id` → prompt registration if unknown
-4. Match `dm` prefix → log event + reply to that student only
+2. Decode hex `dm` field → plain text (e.g. `"cls:open"`)
+3. Ignore `cls:idle` and unknown prefixes
+4. Look up student by `user_id` → prompt registration if unknown
+5. Call `find_active_session()` to resolve session by time window
+6. `cls:open` + no session → auto-create walk-in session
+7. Log beacon event + reply to that student only
 
 ---
 
@@ -231,7 +299,8 @@ See `docs/SystemCase01.md` for the v2 (lab session) design that is already spec'
 - `esp32/src/button_led.ino` — original prototype, **do not modify**
 - Each business case gets its own subfolder: `esp32/src/caseNN/caseNN.ino`
 - `case01.ino` uses `BLEDevice` / `BLEAdvertising` from the ESP32 Arduino BLE library
-- Prints `dm` payload to Serial at 115200 baud on every state transition
+- `dm` strings carry **no session ID** — backend resolves session by time window
+- Prints state to Serial at 115200 baud on every transition
 - Button GPIO: Blue=26, Yellow=14, Red=13 (all `INPUT_PULLUP`, active LOW)
 - LED GPIO: Blue=32, Yellow=33, Red=25
 

@@ -2,9 +2,10 @@ import binascii
 import logging
 
 from ..core.database import (
-    create_session, end_session,
-    get_student, get_student_session_status, get_session_materials,
+    create_walkin_session, end_session, find_active_session,
+    get_student, get_student_session_status,
     log_beacon_event, mark_absentees, register_student,
+    transition_session,
 )
 from ..core.line_client import reply
 
@@ -32,16 +33,13 @@ async def _handle_beacon(event: dict):
     try:
         dm = binascii.unhexlify(dm_hex).decode("utf-8") if dm_hex else ""
     except Exception:
-        dm = dm_hex  # fallback: use as-is if not valid hex
+        dm = dm_hex
 
     # log.info("beacon type=%s dm=%r user=%s", beacon_type, dm, user_id[:8] + "…")
 
     if beacon_type != "enter":
         # log.info("ignored — not enter")
         return
-
-    parts      = dm.split(":")
-    session_id = parts[2] if len(parts) == 3 else "000"
 
     if dm.startswith("cls:idle") or not dm.startswith("cls:"):
         # log.info("ignored — idle or unknown dm")
@@ -50,44 +48,76 @@ async def _handle_beacon(event: dict):
     student = get_student(user_id)
     if not student:
         # log.info("unregistered user — prompting registration")
-        await reply(reply_tkn, "Welcome! Please register by sending your 10-digit student ID.\n\nTip: If you don't receive a reply, toggle Bluetooth off and on to re-trigger the beacon.")
+        await reply(
+            reply_tkn,
+            "Welcome! Please register by sending your 10-digit student ID.\n\n"
+            "Tip: If you don't get a reply after registering, toggle Bluetooth off/on "
+            "to re-trigger the beacon and receive ✅ Present.",
+        )
         return
 
-    display   = student["name"] or student["student_id"]
-    materials = get_session_materials(session_id)
-    slides    = materials["slides_url"]
-    supp      = materials["supplementary_url"]
+    display = student["name"] or student["student_id"]
 
-    def _materials_lines() -> str:
-        lines = []
-        if slides:
-            lines.append(f"Slides: {slides}")
-        if supp:
-            lines.append(f"Supplementary: {supp}")
-        return ("\n" + "\n".join(lines)) if lines else ""
+    # ── Resolve active session by time window ──────────────────
+    session = find_active_session()
 
     if dm.startswith("cls:open"):
-        create_session(session_id, version="v1")
+        if not session:
+            session = create_walkin_session()
+            log.warning("No scheduled session found — walk-in session created: %s", session["session_id"])
+        else:
+            transition_session(session["session_id"], "OPEN")
+
+        session_id = session["session_id"]
         log_beacon_event(user_id, student["student_id"], session_id, "PRESENT", dm)
         # log.info("PRESENT logged — student=%s session=%s", student["student_id"], session_id)
-        await reply(reply_tkn, f"✅ Present! {display}{_materials_lines()}\n\nTip: Toggle Bluetooth off/on if you don't see this message.")
+
+        msg = f"✅ Present! {display}"
+        msg += _materials(session)
+        if session.get("auto_created"):
+            msg += "\n\nℹ️ No session was scheduled — a walk-in session was created automatically."
+        msg += "\n\nTip: Toggle Bluetooth off/on if you don't see this message right away."
+        await reply(reply_tkn, msg)
 
     elif dm.startswith("cls:run"):
+        if not session:
+            # log.info("cls:run — no active session, ignored")
+            return
+        session_id = session["session_id"]
+        transition_session(session_id, "RUNNING")
         log_beacon_event(user_id, student["student_id"], session_id, "LATE", dm)
         # log.info("LATE logged — student=%s session=%s", student["student_id"], session_id)
-        await reply(reply_tkn, f"⏰ Late noted. {display}{_materials_lines()}")
+        await reply(reply_tkn, f"⏰ Late noted. {display}{_materials(session)}")
 
     elif dm.startswith("cls:qz"):
+        if not session:
+            # log.info("cls:qz — no active session, ignored")
+            return
+        session_id = session["session_id"]
+        transition_session(session_id, "QUIZ")
         log_beacon_event(user_id, student["student_id"], session_id, "QUIZ", dm)
         # log.info("QUIZ logged — student=%s session=%s", student["student_id"], session_id)
-        await reply(reply_tkn, f"📝 Quiz is live!{_materials_lines()}")
+        await reply(reply_tkn, f"📝 Quiz is live!{_materials(session)}")
 
     elif dm.startswith("cls:end"):
+        if not session:
+            # log.info("cls:end — no active session, ignored")
+            return
+        session_id = session["session_id"]
         mark_absentees(session_id)
         end_session(session_id)
         status = get_student_session_status(student["student_id"], session_id) or "ABSENT"
         # log.info("END — session=%s status=%s", session_id, status)
         await reply(reply_tkn, f"Class has ended. Your status: {status}")
+
+
+def _materials(session: dict) -> str:
+    lines = []
+    if session.get("slides_url"):
+        lines.append(f"Slides: {session['slides_url']}")
+    if session.get("supplementary_url"):
+        lines.append(f"Supplementary: {session['supplementary_url']}")
+    return ("\n" + "\n".join(lines)) if lines else ""
 
 
 async def _handle_message(event: dict):
@@ -106,6 +136,11 @@ async def _handle_message(event: dict):
 
     if text.isdigit() and len(text) == 10:
         register_student(user_id, text)
-        await reply(reply_tkn, f"Registered! 🎓 Student ID: {text}\nAll future classes are automatic.")
+        await reply(
+            reply_tkn,
+            f"Registered! 🎓 Student ID: {text}\n"
+            "All future classes are automatic.\n\n"
+            "Tip: Toggle Bluetooth off/on now to check in if a class is already in session.",
+        )
     else:
         await reply(reply_tkn, "Please send your 10-digit student ID to register.")

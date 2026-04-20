@@ -11,9 +11,11 @@ from ..core.database import (
     delete_student,
     get_session,
     list_attendance,
+    list_beacon_log,
     list_sessions,
     list_students,
     override_attendance,
+    schedule_session,
     update_session_materials,
 )
 
@@ -21,6 +23,28 @@ router = APIRouter(prefix="/api/v1", tags=["Lecturer Admin — v1"])
 
 
 # ── Sessions ──────────────────────────────────────────────────
+
+class ScheduleSessionRequest(BaseModel):
+    label: str = ""
+    start_time: str  # ISO-8601, e.g. "2026-04-20T09:00:00+07:00"
+    end_time: str    # ISO-8601, e.g. "2026-04-20T11:00:00+07:00"
+    slides_url: str = ""
+    supplementary_url: str = ""
+
+
+@router.post("/sessions/", summary="Pre-schedule a session", status_code=201)
+def create_session(
+    body: ScheduleSessionRequest,
+    _: str = Depends(require_lecturer),
+):
+    return schedule_session(
+        start_time=body.start_time,
+        end_time=body.end_time,
+        label=body.label,
+        slides_url=body.slides_url,
+        supplementary_url=body.supplementary_url,
+    )
+
 
 @router.get("/sessions/", summary="List all sessions with attendance counts")
 def get_sessions(
@@ -104,6 +128,17 @@ def patch_attendance(
     if result is None:
         raise HTTPException(status_code=404, detail="Student or session not found")
     return {"updated": True, **result}
+
+
+@router.get("/sessions/{session_id}/log", summary="Full beacon event log — all re-entries included")
+def get_beacon_log(
+    session_id: str,
+    student_id: str | None = Query(None, description="Filter by student ID"),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    _: str = Depends(require_lecturer),
+):
+    return list_beacon_log(session_id=session_id, student_id=student_id, limit=limit, offset=offset)
 
 
 @router.get("/sessions/{session_id}/export", summary="Export attendance as CSV or JSON")

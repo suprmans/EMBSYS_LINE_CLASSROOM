@@ -1,10 +1,12 @@
 // BusinessCase01 — Smart Classroom Attendance
 // LINE Simple Beacon  HWID: 018f62bd52
 //
-// Blue  btn GPIO26 → LED GPIO32 : IDLE  → OPEN     (cls:open:NNN)
-// Yellow btn GPIO14 → LED GPIO33 : OPEN  → RUNNING  (cls:run:NNN)
-//                                  RUNNING → QUIZ    (cls:qz:NNN)
-// Red   btn GPIO13 → LED GPIO25 : any   → ENDED    (cls:end:NNN)
+// Blue   btn GPIO26 → LED GPIO32 : IDLE    → OPEN     (cls:open)
+// Yellow btn GPIO14 → LED GPIO33 : OPEN    → RUNNING  (cls:run)
+//                                  RUNNING → QUIZ     (cls:qz)
+// Red    btn GPIO13 → LED GPIO25 : any     → ENDED    (cls:end)
+//
+// Session ID is resolved by the backend from a pre-scheduled time window.
 
 #include <BLEDevice.h>
 #include <BLEAdvertising.h>
@@ -21,7 +23,6 @@ const int ledPins[] = { 32, 33, 25 };  // Blue, Yellow, Red
 // ── Session state ─────────────────────────────────────────────
 enum State { IDLE, OPEN, RUNNING, QUIZ, ENDED };
 State sessionState = IDLE;
-int   sessionId    = 0;
 
 // ── Debounce ──────────────────────────────────────────────────
 bool          lastStable[3]  = { HIGH, HIGH, HIGH };
@@ -131,8 +132,6 @@ void loop() {
 
 // ─────────────────────────────────────────────────────────────
 void transitionTo(State next) {
-  char dm[14];
-
   if (next == ENDED) {
     // Red LED: 3× flash
     for (int f = 0; f < 3; f++) {
@@ -140,31 +139,28 @@ void transitionTo(State next) {
       digitalWrite(ledPins[2], LOW);  delay(100);
     }
     for (int i = 0; i < 3; i++) digitalWrite(ledPins[i], LOW);
-    snprintf(dm, sizeof(dm), "cls:end:%03d", sessionId);
-    advertiseBeacon(dm);
+    advertiseBeacon("cls:end");
     sessionState = IDLE;
-    Serial.printf("[END] Session %03d\n", sessionId);
-    delay(5000);                    // keep cls:end visible for 5 s
+    Serial.println("[END]");
+    delay(5000);  // keep cls:end visible for 5 s
     advertiseBeacon("cls:idle");
     return;
   }
 
   if (next == OPEN) {
-    sessionId++;
     digitalWrite(ledPins[0], HIGH);
     digitalWrite(ledPins[1], LOW);
     digitalWrite(ledPins[2], LOW);
-    snprintf(dm, sizeof(dm), "cls:open:%03d", sessionId);
+    advertiseBeacon("cls:open");
   } else if (next == RUNNING) {
     digitalWrite(ledPins[0], LOW);
     lastBlink = millis(); blinkState = false;
-    snprintf(dm, sizeof(dm), "cls:run:%03d", sessionId);
+    advertiseBeacon("cls:run");
   } else if (next == QUIZ) {
     lastBlink = millis(); blinkState = false;
-    snprintf(dm, sizeof(dm), "cls:qz:%03d", sessionId);
+    advertiseBeacon("cls:qz");
   }
 
   sessionState = next;
-  advertiseBeacon(dm);
-  Serial.printf("[%-7s] Session %03d\n", dm, sessionId);
+  Serial.printf("[%s]\n", next == OPEN ? "OPEN" : next == RUNNING ? "RUN" : "QUIZ");
 }
