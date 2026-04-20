@@ -30,6 +30,7 @@ class ScheduleSessionRequest(BaseModel):
     end_time: str    # ISO-8601, e.g. "2026-04-20T11:00:00+07:00"
     slides_url: str = ""
     supplementary_url: str = ""
+    quiz_url: str = ""
 
 
 @router.post("/sessions/", summary="Pre-schedule a session", status_code=201)
@@ -43,6 +44,7 @@ def create_session(
         label=body.label,
         slides_url=body.slides_url,
         supplementary_url=body.supplementary_url,
+        quiz_url=body.quiz_url,
     )
 
 
@@ -70,6 +72,7 @@ def get_session_detail(
 class SessionMaterialsRequest(BaseModel):
     slides_url: str = ""
     supplementary_url: str = ""
+    quiz_url: str = ""
 
 
 @router.patch("/sessions/{session_id}/", summary="Set slides and supplementary URLs for a session")
@@ -81,8 +84,8 @@ def patch_session_materials(
     session = get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    update_session_materials(session_id, body.slides_url, body.supplementary_url)
-    return {"updated": True, "session_id": session_id, "slides_url": body.slides_url, "supplementary_url": body.supplementary_url}
+    update_session_materials(session_id, body.slides_url, body.supplementary_url, body.quiz_url)
+    return {"updated": True, "session_id": session_id, "slides_url": body.slides_url, "supplementary_url": body.supplementary_url, "quiz_url": body.quiz_url}
 
 
 # ── Attendance ────────────────────────────────────────────────
