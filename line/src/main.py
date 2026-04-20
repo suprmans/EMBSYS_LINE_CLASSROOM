@@ -1,15 +1,14 @@
-from contextlib import asynccontextmanager
 from pathlib import Path
-
 from dotenv import load_dotenv
-from fastapi import FastAPI
 
-from .database import init_db
-from .webhook import router
-
-# Walk up from line/src/ to find the project-root .env
+# Must load before any relative imports that read os.environ at module level
 _ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_ROOT / ".env", override=True)
+
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from .database import init_db
+from .webhook import router
 
 
 @asynccontextmanager

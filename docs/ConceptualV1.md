@@ -107,25 +107,32 @@ ESP32 DevKit
 ├── GPIO34 (ADC) ──┬── LDR
 │                  └── 10kΩ resistor ── GND     (voltage divider)
 │
-├── GPIO0  ────────── Button ── GND              (INPUT_PULLUP, FALLING edge)
+├── GPIO26 ────────── Blue   Button ── GND      (INPUT_PULLUP, open session)
+├── GPIO14 ────────── Yellow Button ── GND      (INPUT_PULLUP, quiz mode)
+├── GPIO13 ────────── Red    Button ── GND      (INPUT_PULLUP, end session)
 │
-├── GPIO25 (LEDC) ── 220Ω ── LED Green           (heartbeat / system alive)
-├── GPIO26 (LEDC) ── 220Ω ── LED Yellow          (session state)
-├── GPIO27 (LEDC) ── 220Ω ── LED Red             (quiz / alert)
+├── GPIO32 ── 220Ω ── LED Blue                  (system heartbeat / idle)
+├── GPIO33 ── 220Ω ── LED Yellow                (session state)
+├── GPIO25 ── 220Ω ── LED Red                   (quiz / alert)
 │
 └── BLE radio (internal) ── LINE Simple Beacon advertising
 ```
 
+> **Implemented:** Buttons and LEDs are live in `button_led.ino` — 25 ms software debounce,
+> toggle-on-press, boot-flash self-test. LDR and BLE are the next wiring step.
+
 ### Component duties
 
-| Component | Physical role | Embedded role | Course concept |
-|---|---|---|---|
-| **LDR** | Detects classroom light on/off | Source of Hardware Timer ISR → ADC read → circular buffer → moving average → state transition trigger | Interrupt, ADC peripheral |
-| **Button** | Lecturer manual action | GPIO falling-edge ISR → `xEventGroupSetBitsFromISR` → LecturerTask wakes | Interrupt, EventGroup |
-| **LED Green** | System heartbeat | LEDC PWM channel, 1Hz fade — always on | PWM peripheral (April) |
-| **LED Yellow** | Session window status | GPIO driven by LEDTask based on shared state — solid = OPEN, off = IDLE | Digital output, RTOS task |
-| **LED Red** | Quiz / alert signal | Hardware Timer callback drives 5Hz blink precisely — no task blocking | Timer peripheral (April) |
-| **ESP32 BLE** | Broadcasts session context | BeaconTask updates `dm` payload each cycle; `vTaskDelayUntil` enforces 100ms period | Real-time scheduling |
+| Component | Pin(s) | Physical role | Embedded role | Course concept |
+|---|---|---|---|---|
+| **LDR** | GPIO34 | Detects classroom light on/off | Hardware Timer ISR → ADC read → circular buffer → moving average → state transition | Interrupt, ADC peripheral |
+| **Blue Button** | GPIO26 | Lecturer: open attendance window | Polling debounce (25 ms) → toggle → `LecturerTask` sets OPEN | GPIO, debounce |
+| **Yellow Button** | GPIO14 | Lecturer: start quiz | Polling debounce (25 ms) → toggle → `LecturerTask` sets QUIZ | GPIO, debounce |
+| **Red Button** | GPIO13 | Lecturer: end session | Polling debounce (25 ms) → toggle → `LecturerTask` sets ENDED | GPIO, debounce |
+| **LED Blue** | GPIO32 | System heartbeat / idle indicator | LEDC PWM 1 Hz fade — always on while powered | PWM peripheral |
+| **LED Yellow** | GPIO33 | Session window status | GPIO driven by LEDTask — solid = OPEN, blink = RUNNING, off = IDLE | Digital output, RTOS task |
+| **LED Red** | GPIO25 | Quiz / alert signal | Hardware Timer callback drives 5 Hz blink — no task blocking | Timer peripheral |
+| **ESP32 BLE** | internal | Broadcasts session context | BeaconTask updates `dm` payload each cycle; `vTaskDelayUntil` 100 ms period | Real-time scheduling |
 
 ### LDR circuit detail
 
@@ -210,7 +217,23 @@ void IRAM_ATTR onTimer() {
 }
 ```
 
-**Button ISR → EventGroup (aperiodic, lecturer)**
+**3-Button polling debounce (implemented in `button_led.ino`)**
+```cpp
+// Per-button state: lastRaw[], lastStable[], lastChange[], ledState[]
+for (int i = 0; i < 3; i++) {
+    bool raw = digitalRead(btnPins[i]);          // btnPins = {26,14,13}
+    if (raw != lastRaw[i]) { lastRaw[i] = raw; lastChange[i] = millis(); }
+    if ((millis() - lastChange[i]) >= 25 && raw != lastStable[i]) {
+        lastStable[i] = raw;
+        if (raw == LOW) {                        // confirmed press
+            ledState[i] = !ledState[i];
+            digitalWrite(ledPins[i], ledState[i]);  // ledPins = {32,33,25}
+        }
+    }
+}
+```
+
+**Button EventGroup path (FreeRTOS layer — planned)**
 ```cpp
 void IRAM_ATTR buttonISR() {
     BaseType_t woken = pdFALSE;
@@ -290,7 +313,7 @@ def handle_beacon(user_id, reply_token, dm):
 | Embedded systems design | Full system design: sensor → MCU → cloud → user |
 
 **Specific mapping:**  
-The LDR is sampled by a hardware timer interrupt at 50Hz — exactly the "counting events" pattern from January's stopwatch demo, repurposed for ADC event counting. The button uses a GPIO edge interrupt identical in structure to the January interrupt exercises.
+The LDR is sampled by a hardware timer interrupt at 50Hz — exactly the "counting events" pattern from January's stopwatch demo, repurposed for ADC event counting. Three lecturer buttons (GPIO 26/14/13) use software-debounced GPIO reads (25 ms window), directly applying the January interrupt and input-debounce exercises at hardware scale.
 
 ---
 
@@ -346,8 +369,8 @@ The April peripherals checklist — Timer, PWM, LED, UART, ADC — are all prese
 | Dimension | Detail |
 |---|---|
 | Domain | Smart classroom — university lecture attendance |
-| Physical input | LDR (room light), Button (lecturer action) |
-| Physical output | 3× LED (Green/Yellow/Red) via PWM |
+| Physical input | LDR (room light), 3× Button — Blue/Yellow/Red (lecturer actions) |
+| Physical output | 3× LED — Blue/Yellow/Red (GPIO 32/33/25) |
 | Communication | BLE LINE Beacon → LINE Messaging API (Reply — free) |
 | User identification | LINE userId (automatic) → student registry mapping |
 | Concurrency model | 4 FreeRTOS tasks, 1 mutex, 1 EventGroup, 2 software timers |

@@ -60,10 +60,22 @@ async def _handle_beacon(event: dict):
         await reply(reply_tkn, summary)
 
 
+_GREETINGS = {"hello", "hi", "hey", "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ", "หวัดดี", "ดีครับ", "ดีค่ะ"}
+
+
 async def _handle_registration(event: dict):
     user_id   = event["source"]["userId"]
     reply_tkn = event["replyToken"]
     text      = event["message"]["text"].strip()
+
+    if text.lower() in _GREETINGS:
+        student = get_student(user_id)
+        if student:
+            name = student["name"] or student["student_id"]
+            await reply(reply_tkn, f"สวัสดีครับ {name}! 👋\nระบบพร้อมใช้งานแล้ว ✅")
+        else:
+            await reply(reply_tkn, "สวัสดีครับ! 👋 ยังไม่ได้ลงทะเบียน\nกรุณาส่งรหัสนักศึกษา 10 หลักเพื่อลงทะเบียน")
+        return
 
     if text.isdigit() and len(text) == 10:
         register_student(user_id, text)
