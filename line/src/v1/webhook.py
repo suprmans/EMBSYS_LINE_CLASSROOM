@@ -1,8 +1,12 @@
+import json
+import logging
+
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from ..core.line_client import verify_signature
 from .handlers import dispatch
 
+log = logging.getLogger(__name__)
 router = APIRouter(tags=["Webhook v1"])
 
 
@@ -17,6 +21,8 @@ async def webhook_v1(
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     payload = await request.json()
+    # log.info("RAW payload: %s", json.dumps(payload, ensure_ascii=False))
+
     for event in payload.get("events", []):
         await dispatch(event)
 

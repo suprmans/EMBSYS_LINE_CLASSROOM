@@ -14,6 +14,7 @@ from ..core.database import (
     list_sessions,
     list_students,
     override_attendance,
+    update_session_materials,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["Lecturer Admin — v1"])
@@ -40,6 +41,24 @@ def get_session_detail(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return session
+
+
+class SessionMaterialsRequest(BaseModel):
+    slides_url: str = ""
+    supplementary_url: str = ""
+
+
+@router.patch("/sessions/{session_id}/", summary="Set slides and supplementary URLs for a session")
+def patch_session_materials(
+    session_id: str,
+    body: SessionMaterialsRequest,
+    _: str = Depends(require_lecturer),
+):
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    update_session_materials(session_id, body.slides_url, body.supplementary_url)
+    return {"updated": True, "session_id": session_id, "slides_url": body.slides_url, "supplementary_url": body.supplementary_url}
 
 
 # ── Attendance ────────────────────────────────────────────────

@@ -32,11 +32,18 @@ def init_db():
         """)
         con.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
-                session_id TEXT PRIMARY KEY,
-                version    TEXT NOT NULL DEFAULT 'v1',
-                opened_at  TIMESTAMPTZ DEFAULT NOW(),
-                ended_at   TIMESTAMPTZ
+                session_id       TEXT PRIMARY KEY,
+                version          TEXT NOT NULL DEFAULT 'v1',
+                opened_at        TIMESTAMPTZ DEFAULT NOW(),
+                ended_at         TIMESTAMPTZ,
+                slides_url       TEXT NOT NULL DEFAULT '',
+                supplementary_url TEXT NOT NULL DEFAULT ''
             )
+        """)
+        con.execute("""
+            ALTER TABLE sessions
+                ADD COLUMN IF NOT EXISTS slides_url        TEXT NOT NULL DEFAULT '',
+                ADD COLUMN IF NOT EXISTS supplementary_url TEXT NOT NULL DEFAULT ''
         """)
         con.execute("""
             CREATE TABLE IF NOT EXISTS beacon_events (
@@ -122,6 +129,24 @@ def create_session(session_id: str, version: str = "v1"):
             (session_id, version),
         )
         con.commit()
+
+
+def update_session_materials(session_id: str, slides_url: str, supplementary_url: str):
+    with _conn() as con:
+        con.execute(
+            "UPDATE sessions SET slides_url = %s, supplementary_url = %s WHERE session_id = %s",
+            (slides_url, supplementary_url, session_id),
+        )
+        con.commit()
+
+
+def get_session_materials(session_id: str) -> dict:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT slides_url, supplementary_url FROM sessions WHERE session_id = %s",
+            (session_id,),
+        ).fetchone()
+        return row or {"slides_url": "", "supplementary_url": ""}
 
 
 def end_session(session_id: str):

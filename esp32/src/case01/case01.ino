@@ -68,7 +68,7 @@ void advertiseBeacon(const char* dm) {
   for (int b = 0; b < dmLen; b++) adv[i++] = (uint8_t)dm[b];
 
   BLEAdvertisementData data;
-  data.addData(std::string((char*)adv, i));
+  data.addData((char*)adv, i);
   pAdv->setAdvertisementData(data);
   pAdv->start();
 

@@ -1,9 +1,15 @@
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Must load before any relative imports that read os.environ at module level
 _ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_ROOT / ".env", override=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s [%(name)s] %(message)s",
+)
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
