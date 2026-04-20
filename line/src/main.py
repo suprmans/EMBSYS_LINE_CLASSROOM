@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -5,10 +6,16 @@ from dotenv import load_dotenv
 _ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_ROOT / ".env", override=True)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s [%(name)s] %(message)s",
+)
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from .database import init_db
-from .webhook import router
+from .core.database import init_db
+from .v1.webhook import router as webhook_v1
+from .v1.api import router as api_v1
 
 
 @asynccontextmanager
@@ -17,5 +24,16 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(lifespan=lifespan)
-app.include_router(router)
+app = FastAPI(
+    title="Smart Classroom Attendance",
+    description=(
+        "LINE Beacon attendance backend — BusinessCase01.\n\n"
+        "**Lecturer endpoints** require `Authorization: Bearer <LECTURER_TOKEN>`.\n"
+        "Set the token in `/docs` via the 🔒 Authorize button."
+    ),
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.include_router(webhook_v1)
+app.include_router(api_v1)
