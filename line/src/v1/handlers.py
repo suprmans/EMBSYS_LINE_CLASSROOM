@@ -1,5 +1,11 @@
-from .database import get_student, get_student_session_status, log_beacon_event, mark_absentees, register_student
-from .line_client import reply
+from ..core.database import (
+    create_session, end_session,
+    get_student, get_student_session_status,
+    log_beacon_event, mark_absentees, register_student,
+)
+from ..core.line_client import reply
+
+_GREETINGS = {"hello", "hi", "hey", "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ", "หวัดดี", "ดีครับ", "ดีค่ะ"}
 
 
 async def dispatch(event: dict):
@@ -7,7 +13,7 @@ async def dispatch(event: dict):
     if etype == "beacon":
         await _handle_beacon(event)
     elif etype == "message" and event.get("message", {}).get("type") == "text":
-        await _handle_registration(event)
+        await _handle_message(event)
 
 
 async def _handle_beacon(event: dict):
@@ -17,12 +23,10 @@ async def _handle_beacon(event: dict):
     dm          = beacon.get("dm", "")
     beacon_type = beacon.get("type", "")
 
-    # Only act on entry — ignore leave/banner
     if beacon_type != "enter":
         return
 
-    # dm format: "cls:<state>:<session_id>"
-    parts = dm.split(":")
+    parts      = dm.split(":")
     session_id = parts[2] if len(parts) == 3 else "000"
 
     if dm.startswith("cls:idle") or not dm.startswith("cls:"):
@@ -36,6 +40,7 @@ async def _handle_beacon(event: dict):
     display = student["name"] or student["student_id"]
 
     if dm.startswith("cls:open"):
+        create_session(session_id, version="v1")
         log_beacon_event(user_id, student["student_id"], session_id, "PRESENT", dm)
         await reply(reply_tkn, f"✅ Present! {display}\nSlides: bit.ly/emb-w12")
 
@@ -49,20 +54,12 @@ async def _handle_beacon(event: dict):
 
     elif dm.startswith("cls:end"):
         mark_absentees(session_id)
-        # Tell this student only their own outcome — never expose other students' data
-        status = _own_session_status(student["student_id"], session_id)
+        end_session(session_id)
+        status = get_student_session_status(student["student_id"], session_id) or "ABSENT"
         await reply(reply_tkn, f"Class has ended. Your status: {status}")
 
 
-def _own_session_status(student_id: str, session_id: str) -> str:
-    status = get_student_session_status(student_id, session_id)
-    return status if status else "ABSENT"
-
-
-_GREETINGS = {"hello", "hi", "hey", "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ", "หวัดดี", "ดีครับ", "ดีค่ะ"}
-
-
-async def _handle_registration(event: dict):
+async def _handle_message(event: dict):
     user_id   = event["source"]["userId"]
     reply_tkn = event["replyToken"]
     text      = event["message"]["text"].strip()

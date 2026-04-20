@@ -1,6 +1,6 @@
+import base64
 import hashlib
 import hmac
-import base64
 import os
 
 import httpx
@@ -17,9 +17,9 @@ def verify_signature(body: bytes, signature: str) -> bool:
 
 async def reply(reply_token: str, text: str):
     headers = {"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"}
-    body = {
+    payload = {
         "replyToken": reply_token,
         "messages": [{"type": "text", "text": text}],
     }
     async with httpx.AsyncClient() as client:
-        await client.post(REPLY_URL, json=body, headers=headers)
+        await client.post(REPLY_URL, json=payload, headers=headers)

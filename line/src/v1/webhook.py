@@ -1,13 +1,13 @@
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from ..core.line_client import verify_signature
 from .handlers import dispatch
-from .line_client import verify_signature
 
-router = APIRouter()
+router = APIRouter(tags=["Webhook v1"])
 
 
-@router.post("/webhook")
-async def webhook(
+@router.post("/webhook/v1/", include_in_schema=False)
+async def webhook_v1(
     request: Request,
     x_line_signature: str = Header(None),
 ):
