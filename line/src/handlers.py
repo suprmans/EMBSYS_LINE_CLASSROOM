@@ -1,4 +1,4 @@
-from .database import get_student, log_beacon_event, mark_absentees, register_student
+from .database import get_student, get_student_session_status, log_beacon_event, mark_absentees, register_student
 from .line_client import reply
 
 
@@ -48,16 +48,15 @@ async def _handle_beacon(event: dict):
         await reply(reply_tkn, "📝 Quiz is live!\nliff.line.me/quiz-emb")
 
     elif dm.startswith("cls:end"):
-        absent_ids = mark_absentees(session_id)
-        n = len(absent_ids)
-        summary = f"Session {session_id} ended.\nAbsent: {n} student(s)."
-        if absent_ids:
-            # Trim to avoid hitting LINE's 5000-char message limit
-            shown = ", ".join(absent_ids[:20])
-            if n > 20:
-                shown += f" … (+{n - 20} more)"
-            summary += f"\n{shown}"
-        await reply(reply_tkn, summary)
+        mark_absentees(session_id)
+        # Tell this student only their own outcome — never expose other students' data
+        status = _own_session_status(student["student_id"], session_id)
+        await reply(reply_tkn, f"Class has ended. Your status: {status}")
+
+
+def _own_session_status(student_id: str, session_id: str) -> str:
+    status = get_student_session_status(student_id, session_id)
+    return status if status else "ABSENT"
 
 
 _GREETINGS = {"hello", "hi", "hey", "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ", "หวัดดี", "ดีครับ", "ดีค่ะ"}

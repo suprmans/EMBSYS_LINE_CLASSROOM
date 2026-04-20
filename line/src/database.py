@@ -77,6 +77,16 @@ def log_beacon_event(
         )
 
 
+def get_student_session_status(student_id: str, session_id: str) -> str | None:
+    """Return this student's own attendance status for a session, or None if unseen."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT status FROM attendance WHERE student_id = ? AND session_id = ?",
+            (student_id, session_id),
+        ).fetchone()
+        return row["status"] if row else None
+
+
 def mark_absentees(session_id: str) -> list[str]:
     """Insert ABSENT rows for every student not seen this session.
     Returns list of absent student_ids for the summary reply.
