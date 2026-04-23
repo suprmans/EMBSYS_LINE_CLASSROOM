@@ -2,7 +2,7 @@
 ## Project Report — Embedded & Real-Time Systems (2110682)
 
 **Author:** Shalong Samretnagn (6570047721)  
-**Date:** April 23, 2026
+**Date:** April 24, 2026
 
 ---
 
@@ -77,6 +77,10 @@ All buttons are wired with `INPUT_PULLUP` — the GPIO reads HIGH at rest and fa
 ### 3.2 Arduino Connection Diagram
 
 ![ESP32 breadboard wiring — 3 buttons (GPIO 26, 14, 13) and 3 LEDs with 220 Ω resistors (GPIO 32, 33, 25)](./esp32-breadboard.png)
+
+### 3.3 Physical Board
+
+![Assembled ESP32 hardware with buttons and LEDs](./board.jpg)
 
 ---
 
@@ -249,7 +253,11 @@ Session ends                           "Class has ended. Your status: PRESENT"
 
 The student never knows the system is running. The only visible output is a LINE chat message — the same channel they use for everything else. There is no separate app to install, no QR code to scan, no NFC tap required.
 
-### 5.3 Anti-Cheat Properties
+### 5.3 System Demo
+
+<img src="./demo.jpg" alt="LINE chat messages received by a student — Present confirmation and quiz link" width="50%">
+
+### 5.4 Anti-Cheat Properties
 
 The system's anti-cheat design flows directly from the hardware and protocol choices:
 
@@ -281,3 +289,17 @@ This project demonstrates how an embedded device with three buttons and three LE
 From an embedded systems perspective, the project puts into practice several course concepts within a single coherent application: GPIO input with software debounce, BLE peripheral programming, dual-core task partitioning, and a real-time constraint on the advertising period. The backend is a thin processing layer — it receives facts from the hardware and acts on them, but it does not direct the hardware.
 
 The physical simplicity of the interface — three buttons, three LEDs — is intentional. Reliability and ease of use in a live classroom require that the lecturer can operate the device without looking away from the room.
+
+---
+
+## 8. Resource
+
+The complete source code — ESP32 firmware, FastAPI backend, and configuration — is publicly available:
+
+**GitHub:** [https://github.com/suprmans/EMBSYS_LINE_CLASSROOM](https://github.com/suprmans/EMBSYS_LINE_CLASSROOM)
+
+The repository includes the Arduino sketch, Python backend, database schema, and setup instructions. It is released for educational use and can be adapted for other courses or institutions running LINE-based attendance systems.
+
+---
+
+*This report was drafted with writing assistance from Claude Code (Sonnet 4.6). All technical content, design decisions, and implementation work are the author's own.*
