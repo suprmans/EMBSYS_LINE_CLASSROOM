@@ -1,6 +1,12 @@
 # Smart Classroom Attendance via LINE Beacon
 
-**Author:** Shalong Samretnagn
+<div align="center">
+
+[![GitHub](https://img.shields.io/badge/GitHub-suprmans-181717?style=flat&logo=github)](https://github.com/suprmans)
+[![Kaggle](https://img.shields.io/badge/Kaggle-suprmans-20BEFF?style=flat&logo=kaggle&logoColor=white)](https://www.kaggle.com/suprmans)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-suprmans-FFD21E?style=flat&logo=huggingface&logoColor=black)](https://huggingface.co/suprmans)
+
+</div>
 
 ESP32-based smart attendance system for classrooms using BLE LINE Beacon and FastAPI. Students are identified automatically through their LINE `userId` and marked Present, Late, or Absent by session state — no app install, no QR code. The lecturer controls the session with 3 physical buttons. The backend uses FastAPI and PostgreSQL to process webhooks, register students, and push attendance status and quiz links via LINE Reply API.
 
