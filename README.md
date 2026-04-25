@@ -104,6 +104,102 @@ LINE fires a `beacon enter` event the **first time** the phone detects the beaco
 
 ---
 
+## LINE Beacon Reference
+
+### What is LINE Beacon
+
+LINE Beacon lets a LINE Official Account receive webhook events when a user's LINE app detects a Bluetooth Low Energy (BLE) advertisement from a registered beacon device. This project uses the **LINE Simple Beacon** specification — any BLE hardware (e.g. ESP32) can act as a beacon as long as it advertises the correct frame format with a registered HWID.
+
+**Requirements for a beacon event to fire:**
+- The user's LINE app has **Bluetooth** and **LINE Beacon** enabled in LINE Settings → Privacy
+- The user has **added the linked LINE OA as a friend**
+- The user is within BLE range of the advertising device (~10 m)
+
+> Reference: [Using beacons — LINE Developers](https://developers.line.biz/en/docs/messaging-api/using-beacons/)
+
+---
+
+### Beacon Event Webhook Payload
+
+When a beacon event fires, LINE POSTs a webhook to your server. The `beacon` object contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `hwid` | string | 10-char hex hardware ID issued at manager.line.biz |
+| `type` | string | `enter` \| `leave` \| `banner` \| `stay` |
+| `dm` | string | Optional hex-encoded device message from the BLE advertisement |
+
+**Event types:**
+
+| Type | Description |
+|---|---|
+| `enter` | User's phone detects the beacon for the first time after entering range |
+| `leave` | User's phone has moved out of beacon range (requires LINE ≥ 7.14.0) |
+| `banner` | User tapped a beacon banner notification |
+| `stay` | User remains in range (periodic re-notification) |
+
+**Example payload:**
+
+```json
+{
+  "replyToken": "<reply_token>",
+  "type": "beacon",
+  "mode": "active",
+  "timestamp": 1462629479859,
+  "source": {
+    "type": "user",
+    "userId": "U4af4980629..."
+  },
+  "webhookEventId": "<webhook_id>",
+  "deliveryContext": { "isRedelivery": false },
+  "beacon": {
+    "hwid": "<hex_hardware_id>",
+    "type": "enter",
+    "dm": "636c733a6f70656e"
+  }
+}
+```
+
+The `dm` field is decoded by the backend to determine which session state fired the event:
+
+| BLE payload | Hex `dm` | Session state | Attendance outcome |
+|---|---|---|---|
+| `cls:open` | `636c733a6f70656e` | OPEN | PRESENT |
+| `cls:late` | `636c733a6c617465` | LATE_CHECKIN | LATE |
+| `cls:qz` | `636c733a717a` | QUIZ | QUIZ (bonus) |
+| `cls:end` | `636c733a656e64` | ENDED | ABSENT (unmarked) |
+
+> Reference: [Beacon event — Messaging API Reference](https://developers.line.biz/en/reference/messaging-api/#beacon-event)
+
+---
+
+### HWID ↔ LINE OA Binding
+
+The **hardware ID (HWID)** is a 10-character hex string (5 bytes) that ties a physical beacon device to a specific LINE Official Account. LINE's servers use the HWID in the BLE advertisement to look up the correct OA and route the webhook.
+
+**How the binding works:**
+
+```
+ESP32 advertises HWID  →  LINE app detects BLE frame
+→  LINE servers look up which OA owns that HWID
+→  POST beacon webhook to that OA's webhook URL
+```
+
+**Key rules:**
+- A HWID must be **issued** via [LINE OA Manager → Beacon](https://manager.line.biz/beacon/register) — arbitrary values will not trigger webhooks
+- Each HWID is bound to **exactly one** LINE OA; one OA can have multiple HWIDs
+- If the HWID in the BLE frame is not registered or not linked to an OA, **no webhook is sent** and LINE silently ignores the advertisement
+- The HWID in `esp32/src/case01/case01.ino` must match the issued value byte-for-byte
+
+**Issuing a HWID:**
+1. Go to [manager.line.biz/beacon/register](https://manager.line.biz/beacon/register)
+2. Click **Link beacons with bot account** → select your OA
+3. Click **Issue LINE Simple Beacon hardware IDs** → **Issue hardware ID**
+4. Copy the 10-char hex HWID and set `LINE_BEACON_HWID=<hwid>` in `.env`
+5. Update `LINE_HWID` bytes in the Arduino sketch to match
+
+---
+
 ## Quick Start
 
 ### 1. Prerequisites
